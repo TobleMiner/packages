@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <libubus.h>
 #include <libubox/blobmsg.h>
 #include <libubox/list.h>
 
@@ -30,7 +31,7 @@ static int gluon_parse_blob_interface() {
 }
 
 static void gluon_get_mesh_interfaces_cb(struct ubus_request *req, int type, struct blob_attr *msg) {
-	attr_ctx *ctx = reg->priv;
+	attr_ctx *ctx = req->priv;
 	ctx->attr = msg;
 }
 
