@@ -1,16 +1,11 @@
-# standard compliance
-CFLAGS         += -std=c99
-
-# warnings
-CFLAGS         += -Wall -Wextra -Wformat=2 -Wshadow -Wpointer-arith
-CFLAGS         += -pedantic
+CFLAGS         += -std=c99 -Wall
 
 all: respondd.so
 
 %.c: %.h
 
 respondd.so: mesh.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -shared -fPIC -D_GNU_SOURCE -lnl-tiny -lgluonutil -o $@ $^ $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -shared -fPIC -D_GNU_SOURCE -lmnl -lgluonutil -lubus -lubox -lm -o $@ $^ $(LDLIBS)
 
 clean:
 	rm -rf *.so

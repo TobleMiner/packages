@@ -2,7 +2,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 #include <time.h>
+#include <syslog.h>
+#include <stdbool.h>
+
+#include <libmnl/libmnl.h>
+#include <linux/if.h>
+#include <linux/if_link.h>
+#include <linux/rtnetlink.h>
 
 #include <json-c/json.h>
 #include <libubox/list.h>
@@ -10,50 +18,57 @@
 #include <libgluonutil.h>
 #include <respondd.h>
 
-typedef char[18] mac_addr_t;
+#ifndef typeof
+#define typeof(_type) __typeof__((_type))
+#endif
 
 struct nl_ctx {
 	struct mnl_socket* nl;
 	unsigned int nl_seq;
 };
 
-struct mesh_if {
+struct l2_iface {
 	struct gluonutil_interface* iface;
-	mac_addr_t mac_addr;
+	char mac_addr[18];
+	bool mac_set;
+
+	struct list_head list;
 };
 
-struct mesh_if_ctx {
-	struct mesh_if **interfaces;
-	int num_interfaces;
+struct if_ctx {
+	struct list_head *interfaces;
+	struct list_head *l2_interfaces;
 };
 
-static int list_size(struct list_head* list) {
-	int size = 0;
-	struct list_head c;
-	list_for_each(&c, list) {
-		size++;
-	}
-	return size;
-}
-
-static struct mesh_if *find_interface(struct mesh_if_ctx* ctx, int ifindex) {
-	if(int i = 0; i < ctx->num_interfaces; i++) {
-		if(ctx->interfaces[i]->iface->ifindex == ifindex) {
-			return ctx->interfaces[i];
+static struct gluonutil_interface *find_interface(struct list_head* interfaces, int ifindex) {
+	struct gluonutil_interface *cursor;
+	list_for_each_entry(cursor, interfaces, list) {
+		if(cursor->ifindex == ifindex) {
+			return cursor;
 		}
 	}
 	return NULL;
 }
 
+static void free_l2_interfaces(struct list_head *interfaces) {
+	struct l2_iface *cursor, *next;
+	list_for_each_entry_safe(cursor, next, interfaces, list) {
+		list_del(&cursor->list);
+		free(cursor);
+	}
+}
+
 static int link_attr_cb(const struct nlattr *attr, void *data) {
-	struct mesh_if *meshif = data;
+	struct l2_iface *l2_if = data;
 	int type = mnl_attr_get_type(attr);
 
+	syslog(LOG_NOTICE, "Got attr %d\n", type);
 	if(type == IFLA_ADDRESS) {
 		uint8_t *hwaddr = mnl_attr_get_payload(attr);
 		assert(mnl_attr_get_payload_len(attr) == 6);
-		snprintf(meshif->mac_addr, sizeof(mac_addr_t), "%02x:%02x:%02x:%02x:%02x:%02x", hwaddr[0],
+		sprintf(l2_if->mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x", hwaddr[0],
 			hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
+		l2_if->mac_set = true;
 	}
 
 	return MNL_CB_OK;
@@ -61,54 +76,77 @@ static int link_attr_cb(const struct nlattr *attr, void *data) {
 
 static int link_cb(const struct nlmsghdr *nlh, void *data) {
 	struct ifinfomsg *ifm = mnl_nlmsg_get_payload(nlh);
-	struct mesh_if_ctx *mesh_interfaces = data;
-	struct mesh_if *meshif = find_interface(mesh_interfaces, ifm->ifi_index);
-	if(!meshif) {
+	struct if_ctx *interfaces = data;
+	struct gluonutil_interface *iface = find_interface(interfaces->interfaces, ifm->ifi_index);
+	if(!iface) {
+		syslog(LOG_WARNING, "No mesh interface found\n");
 		goto done;
 	}
 
-	mnl_attr_parse(nlh, sizeof(*ifm), link_attr_cb, meshif);
+	syslog(LOG_NOTICE, "Got iface %u\n", ifm->ifi_index);
+
+	struct l2_iface *l2_if = malloc(sizeof(struct l2_iface));
+	if(!l2_if) {
+		syslog(LOG_WARNING, "Out of memory\n");
+		return -ENOMEM;
+	}
+	memset(l2_if, 0, sizeof(*l2_if));
+	l2_if->iface = iface;
+
+	mnl_attr_parse(nlh, sizeof(*ifm), link_attr_cb, l2_if);
+
+	if(!l2_if->mac_set) {
+		syslog(LOG_WARNING, "Failed to get mac address for interface '%s'\n", iface->device);
+		free(l2_if);
+		goto done;
+	}
+
+	list_add(&l2_if->list, interfaces->l2_interfaces);
 
 done:
 	return MNL_CB_OK;
 }
 
-static int nl_get_mac_addrs(struct nl_ctx *ctx, struct mesh_if* interfaces, int num_interfaces) {
-	int err;
+static int nl_get_mac_addrs(struct nl_ctx *ctx, struct list_head* interfaces, struct list_head* l2_interfaces) {
+	int err = 0;
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
-	struct ntgenmsg *rt;
+	struct rtgenmsg *rt;
 	
         nlh = mnl_nlmsg_put_header(buf);
-	nlh->nlmsg_type = RTM_GETNEIGH;
+	nlh->nlmsg_type = RTM_GETLINK;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-	nlh->nlmsg_seq = ctx->seq++;
+	nlh->nlmsg_seq = ctx->nl_seq;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(struct rtgenmsg));
 	rt->rtgen_family = AF_PACKET;
 
-	if((err = mnl_socket_sendto(ctx->nl, nlh, nlh->nlmsg_len)) < 0) {
+	ssize_t len = 0;
+	if((len = mnl_socket_sendto(ctx->nl, nlh, nlh->nlmsg_len)) < 0) {
+		err = len;
+		syslog(LOG_WARNING, "Failed to send message to rtnl: %d\n", err);
 		goto fail;
 	}
 
-	struct mesh_if_ctx if_ctx;
+	struct if_ctx if_ctx;
 	if_ctx.interfaces = interfaces;
-	if_ctx.num_interfaces = num_interfaces;
-	ssize_t recv_len = 0;
+	if_ctx.l2_interfaces = l2_interfaces;
 	int ret = 0;
-	while((recv_len = mnl_socket_recvfrom(ctx->nl, buf, sizeof(buf))) > 0) {
-		ret = mnl_cb_run(buf, recv_len, ctx->seq, mnl_socket_get_portid(ctx->nl), link_cb, &if_ctx);
+	while((len = mnl_socket_recvfrom(ctx->nl, buf, sizeof(buf))) > 0) {
+		ret = mnl_cb_run(buf, len, ctx->nl_seq, mnl_socket_get_portid(ctx->nl), link_cb, &if_ctx);
 		if(ret != MNL_CB_OK) {
 			break;
 		}
 	}
 
 	if(ret < 0) {
-		err = ret;
+		err = -errno;
+		syslog(LOG_WARNING, "Callback failed: %s (%d)\n", strerror(errno), err);
 		goto fail;		
 	}
 
-	if(recv_len < 0) {
-		err = recv_len;
+	if(len < 0) {
+		err = len;
+		syslog(LOG_WARNING, "Recv failed: %s (%d)\n", strerror(-err), err);
 		goto fail;		
 	}
 
@@ -116,20 +154,22 @@ fail:
 	return err;
 }
 
-static int *rtnl_connect(strut nl_ctx *ctx) {
+static int rtnl_connect(struct nl_ctx *ctx) {
 	int err;
 
 	ctx->nl = mnl_socket_open(NETLINK_ROUTE);
 	if(!ctx->nl) {
 		err = -EINVAL;
+		syslog(LOG_WARNING, "Failed to connect to rtnl\n");
 		goto fail;
 	}
 
 	if((err = mnl_socket_bind(ctx->nl, 0, MNL_SOCKET_AUTOPID)) < 0) {
+		syslog(LOG_WARNING, "Failed to bind rtnl socket to pid\n");
 		goto fail_socket;
 	}
 
-	ctx->seq = time(NULL);
+	ctx->nl_seq = time(NULL);
 	return 0;
 fail_socket:
 	mnl_socket_close(ctx->nl);
@@ -138,68 +178,107 @@ fail:
 }
 
 static struct json_object *respondd_provider_mesh() {
-	struct json_object *result;
-	struct nl_ctx;
+	struct nl_ctx nl_ctx;
 	struct ubus_context *ubus_ctx;
 	LIST_HEAD(interfaces);
+	LIST_HEAD(l2_interfaces);
 
 	if(rtnl_connect(&nl_ctx)) {
-		goto fail;
+		syslog(LOG_WARNING, "Failed to connect to rt netlink\n");
+		return NULL;
 	}
+
+	syslog(LOG_NOTICE, "rtnl connected\n");
 
 	ubus_ctx = ubus_connect(NULL);
 	if(!ubus_ctx) {
-		goto fail_rtnl;
+		syslog(LOG_WARNING, "Failed to connect to ubus\n");
+		mnl_socket_close(nl_ctx.nl);
+		return NULL;
 	}
 	ubus_add_uloop(ubus_ctx);
 
+	syslog(LOG_NOTICE, "ubus connected\n");
+
 	if(gluonutil_get_mesh_interfaces(ubus_ctx, &interfaces)) {
-		goto fail_ubus;
+		syslog(LOG_WARNING, "Failed to get mesh interfaces\n");
+		ubus_free(ubus_ctx);
+		mnl_socket_close(nl_ctx.nl);
+		return NULL;
 	}
 
-	unsigned int num_interfaces = list_size(&interfaces);
-	struct mesh_if[num_interfaces] mesh_interfaces;
-	int i = 0;
-	struct mesh_if *cursor;
-	list_for_each_entry(cursor, &interfaces, list) {
-		mesh_interfaces[i++].iface = cursor;
+	syslog(LOG_NOTICE, "got mesh interfaces\n");
+	ubus_free(ubus_ctx);
+
+	if(nl_get_mac_addrs(&nl_ctx, &interfaces, &l2_interfaces)) {
+		syslog(LOG_WARNING, "Failed to get mac adresses\n");
+		gluonutil_free_interfaces(&interfaces);
+		mnl_socket_close(nl_ctx.nl);
+		return NULL;
 	}
 
-	if(nl_get_mac_addrs(ctx, mesh_interfaces, num_interfaces)) {
-		goto fail_interfaces;
+	syslog(LOG_NOTICE, "got mac adresses\n");
+
+	mnl_socket_close(nl_ctx.nl);
+
+	struct json_object *json_result = json_object_new_object();
+	if (!json_result) {
+		syslog(LOG_WARNING, "Failed to create root json object\n");
+		gluonutil_free_interfaces(&interfaces);
+		return NULL;
 	}
 
-	result = json_object_new_object();
-	if (!result) {
-		goto fail_interfaces;
+	struct json_object *json_network = json_object_new_object();
+	if (!json_network) {
+		syslog(LOG_WARNING, "Failed to create network json object\n");
+		json_object_put(json_result);
+		gluonutil_free_interfaces(&interfaces);
+		return NULL;
 	}
 
-	for(i = 0; i < num_interfaces; i++) {
-		struct mesh_if *iface = &mesh_interfaces[i];
-		struct json_object *mac_addr = json_object_new_string(iface->mac_addr);
+	struct json_object *json_mesh = json_object_new_object();
+	if (!json_mesh) {
+		syslog(LOG_WARNING, "Failed to create mesh json object\n");
+		json_object_put(json_network);
+		json_object_put(json_result);
+		gluonutil_free_interfaces(&interfaces);
+		return NULL;
+	}
+
+	struct json_object *json_link = json_object_new_object();
+	if (!json_link) {
+		syslog(LOG_WARNING, "Failed to create link json object\n");
+		json_object_put(json_mesh);
+		json_object_put(json_network);
+		json_object_put(json_result);
+		gluonutil_free_interfaces(&interfaces);
+		return NULL;
+	}
+
+	syslog(LOG_NOTICE, "got base json\n");
+
+	struct l2_iface* cursor;
+	list_for_each_entry(cursor, &l2_interfaces, list) {
+		struct json_object *mac_addr = json_object_new_string(cursor->mac_addr);
 		if(!mac_addr) {
+			syslog(LOG_WARNING, "Failed to create json MAC string\n");
 			continue;
 		}
-		json_object_object_add(result, iface->iface->device, mac_addr);
+		json_object_object_add(json_link, cursor->iface->device, mac_addr);
 	}
 
-	gluonutil_free_interfaces(&interfaces);
-	ubus_free(ubus_ctx);
-	mnl_socket_close(ctx->nl);
-	
-	return result;
+	json_object_object_add(json_mesh, "link_macs", json_link);
+	json_object_object_add(json_network, "mesh", json_mesh);
+	json_object_object_add(json_result, "network", json_network);
+	syslog(LOG_NOTICE, "done\n");
 
-fail_interfaces:
+	free_l2_interfaces(&l2_interfaces);
 	gluonutil_free_interfaces(&interfaces);
-fail_ubus:
-	ubus_free(ubus_ctx);
-fail_rtnl:
-	mnl_socket_close(ctx->nl);
-fail:
-	return NULL;
+	
+	return json_result;
 }
 
 const struct respondd_provider_info respondd_providers[] = {
-	{"mesh", respondd_provider_mesh},
+	{"nodeinfo", respondd_provider_mesh},
 	{0, 0},
 };
