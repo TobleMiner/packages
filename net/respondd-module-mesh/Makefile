@@ -7,15 +7,19 @@ PKG_RELEASE:=1
 PKG_LICENSE:=BSD-2-Clause
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
-PKG_BUILD_DEPENDS := respondd libgluonutil libubus
+PKG_BUILD_DEPENDS := respondd libgluonutil libubus libmnl
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/respondd-module-mesh
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=Add mesh interface address info to respondd
-  DEPENDS:=+respondd +libnl-tiny +libgluonutil +libubox +libubus
+  TITLE:=respondd-module-mesh
+  DEPENDS:=+respondd +libmnl +libgluonutil +libubox +libubus
+endef
+
+define Package/respondd-module-mesh/description
+	Adds support for discovering mac adresses of local mesh devices
 endef
 
 define Build/Prepare
@@ -27,7 +31,7 @@ define Build/Configure
 endef
 
 
-TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libnl-tiny
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libmnl
 
 define Build/Compile
 	CFLAGS="$(TARGET_CFLAGS)" CPPFLAGS="$(TARGET_CPPFLAGS)" $(MAKE) -C $(PKG_BUILD_DIR) $(TARGET_CONFIGURE_OPTS)
