@@ -78,14 +78,14 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		goto fail_sock;
 	}
 
-	char rx_buff[RX_BUFF_SIZE];
-	memset(rx_buff, 0, RX_BUFF_SIZE);
+	char rx_buff[RX_BUFF_SIZE + 1];
 
 	getclock(&after);
 	timersub(&after, &after, &now);
 	timersub(&timeout, &timeout, &after);
 
 	while(!timeout_elapsed(&timeout)) {
+		memset(rx_buff, 0, RX_BUFF_SIZE + 1);
 		getclock(&now);
 
 		ssize_t recv_size = recv_timeout(sock, rx_buff, RX_BUFF_SIZE, &timeout);
@@ -104,7 +104,8 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 			break;
 		}
 
-		int res = callback(rx_buff, recv_size, cb_priv);
+		// Add one extra byte to ensure NUL termination
+		int res = callback(rx_buff, recv_size + (rx_buff[recv_size - 1] ? 1 : 0), cb_priv);
 		if(res) {
 			if(res == RESPONDD_CB_CANCEL) {
 				break;
