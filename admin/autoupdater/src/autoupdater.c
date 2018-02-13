@@ -32,11 +32,11 @@
 #include "util.h"
 #include "version.h"
 
+#include <libmeshneighbour.h>
 #include <libplatforminfo.h>
 #include <libubox/uloop.h>
 #include <libubox/list.h>
 #include <libubus.h>
-#include <libgluonutil.h>
 #include <librespondd.h>
 #include <ecdsautil/ecdsa.h>
 #include <ecdsautil/sha256.h>
@@ -61,8 +61,6 @@
 
 #define MAX_LINE_LENGTH 512
 #define STRINGIFY(str) #str
-
-#define MAX_MESH_MACS 32
 
 static const char *const download_d_dir = "/usr/lib/autoupdater/download.d";
 static const char *const abort_d_dir = "/usr/lib/autoupdater/abort.d";
@@ -462,9 +460,8 @@ static int lock_autoupdater(void) {
 	return fd;
 }
 
-struct mesh_mac_ctx {
-	unsigned char mesh_macs[MAX_MESH_MACS][6];
-	size_t num_macs;
+struct version_ctx {
+	char *release_str;
 };
 
 #ifndef typeof
@@ -472,56 +469,35 @@ struct mesh_mac_ctx {
 #endif
 
 static int respondd_mesh_cb(char *json_data, size_t len, void* priv) {
-	int err = 0;
-	struct mesh_mac_ctx *mesh_macs = priv;
-	if(mesh_macs->num_macs >= MAX_MESH_MACS) {
-		fputs("autoupdater: warning: Maximum number of mac adresses reached, skipping\n", stderr);
-		goto out;
-	}
-
 	printf("Respondd response: %s\n", json_data);
 
+	struct version_ctx *ctx = priv;
 	struct json_object *json_root = json_tokener_parse(json_data);
 	if(!json_root) {
 		fputs("autoupdater: error: Failed to parse respondd response, skipping\n", stderr);
 		goto out;
 	}
 
-	struct json_object *json_network;
-	if(!json_object_object_get_ex(json_root, "network", &json_network)) {
-		fputs("autoupdater: error: Failed to get network object form response, skipping\n", stderr);
+	struct json_object *json_software;
+	if(!json_object_object_get_ex(json_root, "software", &json_software)) {
+		fputs("autoupdater: error: Failed to get software object form response, skipping\n", stderr);
 		goto out_json_root;
 	}
 
-	struct json_object *json_mesh;
-	if(!json_object_object_get_ex(json_network, "mesh", &json_mesh)) {
-		fputs("autoupdater: error: Failed to get mesh object form response, skipping\n", stderr);
+	struct json_object *json_firmware;
+	if(!json_object_object_get_ex(json_software, "mesh", &json_firmware)) {
+		fputs("autoupdater: error: Failed to get firmware object form response, skipping\n", stderr);
 		goto out_json_root;
 	}
 
-	struct json_object *json_macs;
-	if(!json_object_object_get_ex(json_mesh, "link_macs", &json_macs)) {
-		fputs("autoupdater: error: Failed to get link_macs object form response, skipping\n", stderr);
+	struct json_object *json_release;
+	if(!json_object_object_get_ex(json_firmware, "release", &json_release)) {
+		fputs("autoupdater: error: Failed to get release object form response, skipping\n", stderr);
 		goto out_json_root;
 	}
 
-	json_object_object_foreach(json_macs, key, value) {
-		(void)value;
-		const char* mac_str = json_object_get_string(value);
-		unsigned char* mac_addr = mesh_macs->mesh_macs[mesh_macs->num_macs];
-		int len = sscanf(mac_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mac_addr[0], &mac_addr[1], 
-			&mac_addr[2], &mac_addr[3], &mac_addr[4], &mac_addr[5]);
-		if(len < 0) {
-			fputs("autoupdater: error: Failed to parse mac address, skipping\n", stderr);
-			continue;
-		}
-		mesh_macs->num_macs++;
-		printf("Got mac address #%zu, %02x:%02x:%02x:%02x:%02x:%02x\n", mesh_macs->num_macs, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-		if(mesh_macs->num_macs >= MAX_MESH_MACS) {
-			fputs("autoupdater: warning: Maximum number of mac adressess reached, skipping\n", stderr);
-			break;
-		}
-	}
+	const char *version_str = json_object_get_string(json_release);
+	ctx->release_str = strdup(version_str);
 
 out_json_root:
 	json_object_put(json_root);	
@@ -530,6 +506,8 @@ out:
 }
 
 #define AUTOUPDATER_MAX_URL_FORMAT_LENGTH 128
+
+#define AU_MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 
 int main(int argc, char *argv[]) {
 	struct settings s = { };
@@ -558,14 +536,9 @@ int main(int argc, char *argv[]) {
 		.image_fmt_len = 1,
 	};
 
-	char *mirrors[s.n_mirrors];
-	for(int i = 0; i < s.n_mirrors; i++) {
-		mirrors[i] = s.mirrors[i];
-	}
-
 	size_t mirrors_left = s.n_mirrors;
 	while (mirrors_left) {
-		/*const*/ char **mirror = mirrors;
+		const char **mirror = s.mirrors;
 		size_t i = external_mirrors ? 0 : random() % mirrors_left;
 
 		/* Move forward by i non-NULL entries */
@@ -594,82 +567,74 @@ int main(int argc, char *argv[]) {
 
 	puts("autoupdater: No update severs could be reached. Trying to use mesh neighbours as proxy");
 
-	struct ubus_context *ubus_ctx = ubus_connect(NULL);
-	if(!ubus_ctx) {
-		fputs("autoupdater: error: Failed to connecto to ubus\n", stderr);
+	struct mesh_neighbour_ctx neigh_ctx;
+
+	if(mesh_get_neighbours(&neigh_ctx)) {
+		fputs("autoupdater: error: Failed to get mesh neighbours\n", stderr);
 		goto fail;
 	}
 
-	LIST_HEAD(interfaces);
-	if(gluonutil_get_mesh_interfaces(ubus_ctx, &interfaces)) {
-		fputs("autoupdater: error: Failed to get mesh interfaces\n", stderr);
-		goto fail_ubus;
-	}
+	struct sockaddr_in6 sock_addr;
+	sock_addr.sin6_family = AF_INET6;
+	sock_addr.sin6_port = 1001; // TODO this should be configureable
+	sock_addr.sin6_flowinfo = 0;
 
-	struct timeval respondd_timeout = { 3, 0 }; // TODO this should be configureable
-	struct gluonutil_interface *iface;
-	list_for_each_entry(iface, &interfaces, list) {
-		printf("Handling interface '%s'\n", iface->device);
-		if(!iface->up || !iface->ifindex) {
-			fprintf(stderr, "autoupdater: notice: Interface '%s' is down, skipping\n", iface->device);
+	struct timeval respondd_timeout = { 3, 0 }; // TODO this should be configureable, too
+
+	struct mesh_neighbour *neigh;
+	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+		unsigned char *hwaddr = neigh->hwaddr;
+		printf("Handling neighbour "AU_MAC_FMT"", hwaddr[0], hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
+
+		sock_addr.sin6_scope_id = neigh->iface->ifindex;
+		hwaddr_to_lladdr(&sock_addr.sin6_addr, neigh->hwaddr);
+
+		struct version_ctx ctx;
+		if((err = respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &ctx))) {
+			fputs("autoupdater: warning: Failed to get nodeinfo of neighbour, skipping\n", stderr);
 			continue;
 		}
 
-		struct sockaddr_in6 sock_addr;
-		sock_addr.sin6_family = AF_INET6;
-		sock_addr.sin6_port = 1001; // TODO this should be configureable, too
-		sock_addr.sin6_flowinfo = 0;
-		sock_addr.sin6_addr = IPV6_MCAST_ALL_NODES;
-		sock_addr.sin6_scope_id = iface->ifindex;
-
-		struct mesh_mac_ctx mesh_macs;
-		mesh_macs.num_macs = 0;
-		int err;
-		if((err = respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &mesh_macs))) {
-			fprintf(stderr, "autoupdater: error: Failed to get neighbours on interface '%s' (%s (%d)), skipping\n", iface->device, strerror(-err), err);
+		if(!ctx.release_str) {
+			fputs("autoupdater: warning: Failed to get fimware version of neighbour, skipping\n", stderr);
 			continue;
 		}
 
-		printf("Got %zu peer MACs\n", mesh_macs.num_macs);
-		for(int i = 0; i < mesh_macs.num_macs; i++) {
-			printf("Handling peer MAC %d\n", i);
-			unsigned char* mac_addr = mesh_macs.mesh_macs[i];
-			hwaddr_to_lladdr(&sock_addr.sin6_addr, mac_addr);
-
-			char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
-			char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
-			char v6_addr_tmp[INET6_ADDRSTRLEN];
-			
-
-			int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
-				inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), iface->device);
-
-			int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
-				inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), iface->device);
+		if(!newer_than(ctx.release_str, s->old_version)) {
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node", ctx.release_str, s->old_version);
+			continue;			
+		}
 
 
-			struct updater_url_fmt proxy_download_format = {
-				.manifest_fmt = manifest_fmt,
-				.manifest_fmt_len = manifest_fmt_len,
+		char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
+		char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
+		char v6_addr_tmp[INET6_ADDRSTRLEN];
 
-				.image_fmt = image_fmt,
-				.image_fmt_len = image_fmt_len,
-			};
 
-			if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
-				// update the mtime of the lockfile to indicate a successful run
-				futimens(lock_fd, NULL);
-				gluonutil_free_interfaces(&interfaces);
-				return EXIT_SUCCESS;
-			}
+		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
+			inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
+
+		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
+			inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
+
+
+		struct updater_url_fmt proxy_download_format = {
+			.manifest_fmt = manifest_fmt,
+			.manifest_fmt_len = manifest_fmt_len,
+
+			.image_fmt = image_fmt,
+			.image_fmt_len = image_fmt_len,
+		};
+
+		if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
+			// update the mtime of the lockfile to indicate a successful run
+			futimens(lock_fd, NULL);
+			mesh_free_neighbours_ctx(&neigh_ctx);
+			return EXIT_SUCCESS;
 		}
 	}
-	
-	
-fail_interfaces:
-	gluonutil_free_interfaces(&interfaces);
-fail_ubus:
-	ubus_free(ubus_ctx);
+
+	mesh_free_neighbours_ctx(&neigh_ctx);
 fail:
 	uloop_done();
 
