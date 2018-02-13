@@ -583,7 +583,7 @@ int main(int argc, char *argv[]) {
 		hwaddr_to_lladdr(&sock_addr.sin6_addr, neigh->hwaddr);
 
 		struct version_ctx ctx;
-		if((err = respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &ctx))) {
+		if(respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &ctx)) {
 			fputs("autoupdater: warning: Failed to get nodeinfo of neighbour, skipping\n", stderr);
 			continue;
 		}
@@ -593,8 +593,8 @@ int main(int argc, char *argv[]) {
 			continue;
 		}
 
-		if(!newer_than(ctx.release_str, s->old_version)) {
-			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node", ctx.release_str, s->old_version);
+		if(!newer_than(ctx.release_str, s.old_version)) {
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node", ctx.release_str, s.old_version);
 			continue;			
 		}
 
