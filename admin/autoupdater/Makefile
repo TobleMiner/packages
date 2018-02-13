@@ -3,13 +3,17 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=autoupdater
 PKG_VERSION:=4
 
+PKG_BUILD_DEPENDS := libgluonutil librespondd
+
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
+
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/librespondd-0
 
 define Package/autoupdater
   SECTION:=admin
   CATEGORY:=Administration
-  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci
+  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci +librespondd +libjson-c +libgluonutil +libubus
   TITLE:=Automatically update firmware
 endef
 

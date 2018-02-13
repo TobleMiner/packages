@@ -1,4 +1,5 @@
 /*
+  Copyright (c) 2018, Tobias Schramm <tobleminer@gmail.com>
   Copyright (c) 2017, Jan-Philipp Litza <janphilipp@litza.de>
   All rights reserved.
 
@@ -26,6 +27,11 @@
 
 #include <stddef.h>
 
+#include <netinet/in.h>
+
+#define IPV6_MCAST_ALL_NODES (struct in6_addr){ .s6_addr = { 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 } }
+
+void hwaddr_to_lladdr(struct in6_addr *addr, unsigned char *hwaddr);
 
 void run_dir(const char *dir);
 void randomize(void);
