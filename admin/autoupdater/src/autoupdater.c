@@ -478,7 +478,7 @@ static int respondd_mesh_cb(char *json_data, size_t len, void* priv) {
 	}
 
 	struct json_object *json_firmware;
-	if(!json_object_object_get_ex(json_software, "mesh", &json_firmware)) {
+	if(!json_object_object_get_ex(json_software, "firmware", &json_firmware)) {
 		fputs("autoupdater: error: Failed to get firmware object form response, skipping\n", stderr);
 		goto out_json_root;
 	}
@@ -577,12 +577,13 @@ int main(int argc, char *argv[]) {
 	struct mesh_neighbour *neigh;
 	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
 		unsigned char *hwaddr = neigh->hwaddr;
-		printf("Handling neighbour "AU_MAC_FMT"", hwaddr[0], hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
+		printf("Handling neighbour "AU_MAC_FMT"\n", hwaddr[0], hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
 
 		sock_addr.sin6_scope_id = neigh->iface->ifindex;
 		hwaddr_to_lladdr(&sock_addr.sin6_addr, neigh->hwaddr);
 
 		struct version_ctx ctx;
+		ctx.release_str = NULL;
 		if(respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &ctx)) {
 			fputs("autoupdater: warning: Failed to get nodeinfo of neighbour, skipping\n", stderr);
 			continue;
@@ -594,7 +595,7 @@ int main(int argc, char *argv[]) {
 		}
 
 		if(!newer_than(ctx.release_str, s.old_version)) {
-			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node", ctx.release_str, s.old_version);
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node\n", ctx.release_str, s.old_version);
 			continue;			
 		}
 
