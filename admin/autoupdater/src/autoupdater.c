@@ -71,6 +71,16 @@ static const char *const lockfile = "/var/lock/autoupdater.lock";
 static const char *const firmware_path = "/tmp/firmware.bin";
 static const char *const sysupgrade_path = "/sbin/sysupgrade";
 
+/*
+struct update_method {
+	char* name;
+	int (autoupdate*)(const char *mirror, struct settings *s, struct updater_url_fmt *url_fmt, int lock_fd);
+};
+
+static const struct update_method update_methods[] = {
+	
+};
+*/
 
 struct recv_manifest_ctx {
 	struct settings *s;
@@ -291,6 +301,9 @@ static bool autoupdate(const char *mirror, struct settings *s, struct updater_ur
 	manifest_ctx.ptr = manifest_ctx.buf;
 	struct manifest *m = &manifest_ctx.m;
 
+	printf("Manifest url fmt: %s\n", url_fmt->manifest_fmt);
+	printf("Image url fmt: %s\n", url_fmt->image_fmt);
+
 	/**** Get and check manifest *****************************************/
 	/* Construct manifest URL */
 	char manifest_url[strlen(mirror) + strlen(s->branch) + url_fmt->manifest_fmt_len + 1];
@@ -366,7 +379,7 @@ static bool autoupdate(const char *mirror, struct settings *s, struct updater_ur
 	/* Download image and calculate SHA256 checksum */
 	{
 		char image_url[strlen(mirror) + strlen(m->image_filename) + url_fmt->image_fmt_len + 1];
-		sprintf(image_url, url_fmt->image_fmt, mirror, m->image_filename);
+		sprintf(image_url, url_fmt->image_fmt, mirror, s->branch, m->image_filename);
 		printf("Downloading image from '%s'\n", image_url);
 //		sprintf(image_url, "%s/%s", mirror, m->image_filename);
 		ecdsa_sha256_init(&image_ctx.hash_ctx);
@@ -531,10 +544,10 @@ int main(int argc, char *argv[]) {
 	uloop_init();
 
 	struct updater_url_fmt direct_download_format = {
-		.manifest_fmt = "%s/%s.manifest",
+		.manifest_fmt = "%1$s/%2$s.manifest",
 		.manifest_fmt_len = 10,
 
-		.image_fmt = "%s/%s",
+		.image_fmt = "%1$s/%3$s%2$.0s",
 		.image_fmt_len = 1,
 	};
 
@@ -589,6 +602,7 @@ int main(int argc, char *argv[]) {
 	struct timeval respondd_timeout = { 3, 0 }; // TODO this should be configureable
 	struct gluonutil_interface *iface;
 	list_for_each_entry(iface, &interfaces, list) {
+		printf("Handling interface '%s'\n", iface->device);
 		if(!iface->up || !iface->ifindex) {
 			fprintf(stderr, "autoupdater: notice: Interface '%s' is down, skipping\n", iface->device);
 			continue;
@@ -603,9 +617,10 @@ int main(int argc, char *argv[]) {
 
 		struct mesh_mac_ctx mesh_macs;
 		mesh_macs.num_macs = 0;
-		if(respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &mesh_macs)) {
-			fputs("autoupdater: error: Failed to get neighbours on interface, skipping\n", stderr);
-//			continue;
+		int err;
+		if((err = respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &mesh_macs))) {
+			fprintf(stderr, "autoupdater: error: Failed to get neighbours on interface '%s' (%s (%d)), skipping\n", iface->device, strerror(-err), err);
+			continue;
 		}
 
 		printf("Got %zu peer MACs\n", mesh_macs.num_macs);
@@ -614,20 +629,15 @@ int main(int argc, char *argv[]) {
 			unsigned char* mac_addr = mesh_macs.mesh_macs[i];
 			hwaddr_to_lladdr(&sock_addr.sin6_addr, mac_addr);
 
-			for(int i = 0; i < s.n_mirrors; i++) {
-				mirrors[i] = s.mirrors[i];
-			}
-			mirrors_left = s.n_mirrors;
-
 			char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
 			char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
 			char v6_addr_tmp[INET6_ADDRSTRLEN];
 			
 
-			int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?server=%%.1s&file=%%s.manifest",
+			int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
 				inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), iface->device);
 
-			int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?server=%%.1ss&file=%%s",
+			int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
 				inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), iface->device);
 
 
@@ -639,32 +649,11 @@ int main(int argc, char *argv[]) {
 				.image_fmt_len = image_fmt_len,
 			};
 
-			while (mirrors_left) {
-				/*const*/ char **mirror = mirrors;
-				size_t i = external_mirrors ? 0 : random() % mirrors_left;
-
-				/* Move forward by i non-NULL entries */
-				while (true) {
-					while (!*mirror)
-						mirror++;
-
-					if (!i)
-						break;
-
-					mirror++;
-					i--;
-				}
-
-				if (autoupdate(*mirror, &s, &proxy_download_format, lock_fd)) {
-					// update the mtime of the lockfile to indicate a successful run
-					futimens(lock_fd, NULL);
-					gluonutil_free_interfaces(&interfaces);
-					return EXIT_SUCCESS;
-				}
-
-				/* When the update has failed, remove the mirror from the list */
-				*mirror = NULL;
-				mirrors_left--;
+			if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
+				// update the mtime of the lockfile to indicate a successful run
+				futimens(lock_fd, NULL);
+				gluonutil_free_interfaces(&interfaces);
+				return EXIT_SUCCESS;
 			}
 		}
 	}
