@@ -4,6 +4,7 @@ PKG_NAME:=autoupdater
 PKG_VERSION:=4
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
+PKG_BUILD_DEPENDS := libgluonutil librespondd
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -11,7 +12,7 @@ include $(INCLUDE_DIR)/cmake.mk
 define Package/autoupdater
   SECTION:=admin
   CATEGORY:=Administration
-  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci
+  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci +librespondd +libjson-c +libgluonutil +libubus
   TITLE:=Automatically update firmware
 endef
 
@@ -19,6 +20,7 @@ define Package/autoupdater/conffiles
 /etc/config/autoupdater
 endef
 
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/librespondd-0
 
 CMAKE_OPTIONS += \
     -DCMAKE_BUILD_TYPE:String="MINSIZEREL"

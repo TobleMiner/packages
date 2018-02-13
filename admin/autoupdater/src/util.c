@@ -1,4 +1,5 @@
 /*
+  Copyright (c) 2018, Tobias Schramm <tobleminer@gmail.com>
   Copyright (c) 2017, Jan-Philipp Litza <janphilipp@litza.de>
   All rights reserved.
 
@@ -36,6 +37,22 @@
 
 #include <sys/wait.h>
 
+#include <netinet/in.h>
+
+void hwaddr_to_lladdr(struct in6_addr *addr, unsigned char *hwaddr) {
+	memset(addr, 0, sizeof(struct in6_addr));
+	unsigned char* octets = addr->s6_addr;
+	octets[0] = 0xfe;
+	octets[1] = 0x80;
+	octets[8] = hwaddr[0] ^ 0b10;
+	octets[9] = hwaddr[1];
+	octets[10] = hwaddr[2];
+	octets[11] = 0xff;
+	octets[12] = 0xfe;
+	octets[13] = hwaddr[3];
+	octets[14] = hwaddr[4];
+	octets[15] = hwaddr[5];
+}
 
 void run_dir(const char *dir) {
 	char pat[strlen(dir) + 3];
