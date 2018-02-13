@@ -29,6 +29,10 @@
 #include <errno.h>
 #include <stdbool.h>
 
+#include <libmnl/libmnl.h>
+#include <linux/if_link.h>
+#include <linux/rtnetlink.h>
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -44,7 +48,7 @@
 #include "libmeshneighbour.h"
 
 #ifndef typeof
-#define typeof(_type) __typeof(_type)__
+#define typeof(_type) __typeof__(_type)
 #endif
 
 void mesh_free_neighbours(struct list_head *neighbours) {
@@ -56,7 +60,7 @@ void mesh_free_neighbours(struct list_head *neighbours) {
 }
 
 void mesh_free_neighbours_ctx(struct mesh_neighbour_ctx *ctx) {
-	mesh_free_neighbours(&ctx->neighbours)
+	mesh_free_neighbours(&ctx->neighbours);
 	gluonutil_free_interfaces(&ctx->interfaces);
 }
 
@@ -77,7 +81,7 @@ static struct gluonutil_interface *find_interface_ifindex(struct list_head* inte
 
 struct mesh_interface_ctx {
 	struct list_head *neighbours;
-	struct gluonutil_interface iface;
+	struct gluonutil_interface *iface;
 };
 
 #define member_size(type, member) sizeof(((type *)0)->member)
@@ -89,7 +93,7 @@ static int neigh_attr_cb(const struct nlattr *attr, void *data) {
 	}
 
 	if(type == NDA_LLADDR) {
-		struct iface_ctx *ctx = data;
+		struct mesh_interface_ctx *ctx = data;
 		struct mesh_neighbour *neigh = malloc(sizeof(struct mesh_neighbour));
 		if(!neigh) {
 			goto out;
@@ -125,7 +129,7 @@ static int neigh_cb(const struct nlmsghdr *nlh, void *data)
 	struct mesh_interface_ctx iface_ctx;
 	iface_ctx.neighbours = ctx->neighbours;
 	iface_ctx.iface = iface;
-	mnl_attr_parse(nlh, sizeof(*ndmsg), data_ipv6_attr_cb, iface_ctx);
+	mnl_attr_parse(nlh, sizeof(*ndmsg), neigh_attr_cb, &iface_ctx);
 	return MNL_CB_OK;
 }
 
@@ -135,7 +139,6 @@ int mesh_get_neighbours_interfaces(struct list_head *interfaces, struct list_hea
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
 	struct ndmsg *ndm;
-	int ret;
 	unsigned int seq, portid;
 
 	nlh = mnl_nlmsg_put_header(buf);
@@ -186,16 +189,16 @@ fail:
 	return err;
 }
 
-int mesh_get_neighbours_ubus(struct ubus_context *ubus_ctx, struct neighbour_ctx *neigh_ctx) {
-	LIST_HEAD_INIT(&neigh_ctx->neighbours);
-	LIST_HEAD_INIT(&neigh_ctx->interfaces);
+int mesh_get_neighbours_ubus(struct ubus_context *ubus_ctx, struct mesh_neighbour_ctx *neigh_ctx) {
+	neigh_ctx->neighbours = (struct list_head)LIST_HEAD_INIT(neigh_ctx->neighbours);
+	neigh_ctx->interfaces = (struct list_head)LIST_HEAD_INIT(neigh_ctx->interfaces);
 
-	int err = gluonutil_get_mesh_interfaces(ubus_ctx, interfaces);
+	int err = gluonutil_get_mesh_interfaces(ubus_ctx, &neigh_ctx->interfaces);
 	if(err) {
 		goto fail;
 	}
 
-	err = mesh_get_neighbours_interfaces(interfaces, neighbours);
+	err = mesh_get_neighbours_interfaces(&neigh_ctx->interfaces, &neigh_ctx->neighbours);
 	if(err) {
 		goto fail_interfaces;
 	}
@@ -203,12 +206,12 @@ int mesh_get_neighbours_ubus(struct ubus_context *ubus_ctx, struct neighbour_ctx
 	return 0;
 
 fail_interfaces:
-	gluonutil_free_interfaces(interfaces);
+	gluonutil_free_interfaces(&neigh_ctx->interfaces);
 fail:
 	return err;
 }
 
-int mesh_get_neighbours(struct neighbour_ctx *neigh_ctx) {
+int mesh_get_neighbours(struct mesh_neighbour_ctx *neigh_ctx) {
 	struct ubus_context *ubus_ctx = ubus_connect(NULL);
 	if(!ubus_ctx) {
 		return -ECONNREFUSED;
