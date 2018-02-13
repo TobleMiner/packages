@@ -91,11 +91,11 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		ssize_t recv_size = recv_timeout(sock, rx_buff, RX_BUFF_SIZE, &timeout);
 		if(recv_size < 0) {
 			// Not an error, timeout elapsed
-			if(recv_size == EAGAIN) {
+			if(errno == EAGAIN) {
 				break;
 			}
 
-			err = recv_size;
+			err = -errno;
 			goto fail_sock;
 		}
 
