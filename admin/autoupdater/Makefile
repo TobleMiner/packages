@@ -4,7 +4,7 @@ PKG_NAME:=autoupdater
 PKG_VERSION:=4
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
-PKG_BUILD_DEPENDS := libgluonutil librespondd
+PKG_BUILD_DEPENDS := libmeshneighbour librespondd
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -12,7 +12,7 @@ include $(INCLUDE_DIR)/cmake.mk
 define Package/autoupdater
   SECTION:=admin
   CATEGORY:=Administration
-  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci +librespondd +libjson-c +libgluonutil +libubus
+  DEPENDS:=+libuclient +libecdsautil +libplatforminfo +libuci +librespondd +libjson-c +libmeshneighbour
   TITLE:=Automatically update firmware
 endef
 
