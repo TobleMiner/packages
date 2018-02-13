@@ -28,6 +28,8 @@ endef
 define Build/Configure
 endef
 
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libmnl
+
 define Build/Compile
 	CFLAGS="$(TARGET_CFLAGS)" CPPFLAGS="$(TARGET_CPPFLAGS)" $(MAKE) -C $(PKG_BUILD_DIR) $(TARGET_CONFIGURE_OPTS)
 endef
