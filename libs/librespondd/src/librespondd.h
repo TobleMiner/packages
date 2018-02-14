@@ -10,7 +10,12 @@ enum {
 	RESPONDD_CB_CANCEL
 };
 
-typedef int (*respondd_cb)(char* json_data, size_t data_len, void* priv);
+struct librespondd_pkt_info {
+	unsigned int ifindex;
+	struct in6_addr src_addr;
+};
+
+typedef int (*respondd_cb)(char* json_data, size_t data_len, struct librespondd_pkt_info *pktinfo, void* priv);
 
 int respondd_request(const struct sockaddr_in6* dst, const char* query, struct timeval *timeout, respondd_cb callback, void* cb_priv);
 
