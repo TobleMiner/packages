@@ -5,7 +5,7 @@ PKG_VERSION:=1
 PKG_RELEASE:=1
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
-PKG_BUILD_DEPENDS := libgluonutil libubus libmnl
+PKG_BUILD_DEPENDS := libgluonutil libubus libmnl librespondd
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -13,7 +13,7 @@ define Package/libmeshneighbour
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=libmeshneighbour
-  DEPENDS:=+libgluonutil +libubus +libmnl +libubox
+  DEPENDS:=+libgluonutil +libubus +libmnl +libubox +librespondd
 endef
 
 define Package/libmeshneighbour/description
@@ -28,7 +28,7 @@ endef
 define Build/Configure
 endef
 
-TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libmnl
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/libmnl -I$(STAGING_DIR)/usr/include/librespondd-0
 
 define Build/Compile
 	CFLAGS="$(TARGET_CFLAGS)" CPPFLAGS="$(TARGET_CPPFLAGS)" $(MAKE) -C $(PKG_BUILD_DIR) $(TARGET_CONFIGURE_OPTS)
