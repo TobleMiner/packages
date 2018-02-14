@@ -461,10 +461,9 @@ struct version_ctx {
 #define typeof(_type) __typeof__((_type))
 #endif
 
-static int respondd_mesh_cb(char *json_data, size_t len, void* priv) {
-	printf("Respondd response: %s\n", json_data);
+static int respondd_mesh_cb(char *json_data, size_t len, struct librespondd_pkt_info *pktinfo, struct mesh_neighbour *neigh, void* priv) {
+	printf("JSON Response: %s\n", json_data);
 
-	struct version_ctx *ctx = priv;
 	struct json_object *json_root = json_tokener_parse(json_data);
 	if(!json_root) {
 		fputs("autoupdater: error: Failed to parse respondd response, skipping\n", stderr);
@@ -490,7 +489,7 @@ static int respondd_mesh_cb(char *json_data, size_t len, void* priv) {
 	}
 
 	const char *version_str = json_object_get_string(json_release);
-	ctx->release_str = strdup(version_str);
+	neigh->priv = strdup(version_str);
 
 out_json_root:
 	json_object_put(json_root);	
@@ -562,6 +561,61 @@ int main(int argc, char *argv[]) {
 
 	struct mesh_neighbour_ctx neigh_ctx;
 
+	if(mesh_get_neighbours_respondd(&neigh_ctx, 1001, respondd_mesh_cb, NULL)) {
+		fputs("autoupdater: error: Failed to get mesh neighbours\n", stderr);
+		goto fail_mesh_neigh;
+	}
+
+	struct mesh_neighbour *neigh;
+	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+		char *release_str = neigh->priv;
+
+		if(!release_str) {
+			fputs("autoupdater: notice: Skipping neighbour without version info\n", stderr);
+			continue;
+		}
+
+		if(!newer_than(release_str, s.old_version)) {
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer than '%s', skipping node\n", release_str, s.old_version);
+			continue;
+		}
+
+		char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
+		char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
+		char v6_addr_tmp[INET6_ADDRSTRLEN];
+
+
+		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
+			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
+
+		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
+			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
+
+
+		struct updater_url_fmt proxy_download_format = {
+			.manifest_fmt = manifest_fmt,
+			.manifest_fmt_len = manifest_fmt_len,
+
+			.image_fmt = image_fmt,
+			.image_fmt_len = image_fmt_len,
+		};
+
+		if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
+			// update the mtime of the lockfile to indicate a successful run
+			futimens(lock_fd, NULL);
+			list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+				if(neigh->priv) {
+					free(neigh->priv);
+				}
+			}
+
+			mesh_free_respondd_neighbours_ctx(&neigh_ctx);
+			return EXIT_SUCCESS;
+		}
+	}
+
+/*
+	// TODO this might not be the best idea; I think we can not be sure that all neighbours are in the neighbour cache yet
 	if(mesh_get_neighbours(&neigh_ctx)) {
 		fputs("autoupdater: error: Failed to get mesh neighbours\n", stderr);
 		goto fail;
@@ -595,8 +649,8 @@ int main(int argc, char *argv[]) {
 		}
 
 		if(!newer_than(ctx.release_str, s.old_version)) {
-			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node\n", ctx.release_str, s.old_version);
-			continue;			
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node\n", release_str, s.old_version);
+			continue;
 		}
 
 
@@ -628,7 +682,16 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	mesh_free_neighbours_ctx(&neigh_ctx);
+*/
+
+fail_mesh_neigh:
+	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+		if(neigh->priv) {
+			free(neigh->priv);
+		}
+	}
+
+	mesh_free_respondd_neighbours_ctx(&neigh_ctx);
 fail:
 	uloop_done();
 
