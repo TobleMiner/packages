@@ -41,6 +41,8 @@
 
 #define RX_BUFF_SIZE 1500
 
+#define cmsg_for_each(_c, _hdr) for((_c) = CMSG_FIRSTHDR((_hdr)); (_c); (_c) = CMSG_NXTHDR((_hdr), (_c)))
+
 static void getclock(struct timeval *tv) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -48,12 +50,45 @@ static void getclock(struct timeval *tv) {
 	tv->tv_usec = ts.tv_nsec / 1000;
 }
 
-static ssize_t recv_timeout(int sock, char *buff, size_t max_len, struct timeval *timeout) {
+#define ANCILLARY_DATA_LEN 256
+
+static ssize_t recv_timeout(int sock, char *buff, size_t max_len, struct librespondd_pkt_info *info, struct timeval *timeout) {
 	if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, timeout, sizeof(*timeout))) {
 		return -errno;
 	}
 
-	return recv(sock, buff, max_len, 0);
+	struct iovec iov = {
+		.iov_base = buff,
+		.iov_len = max_len
+	};
+
+	struct sockaddr_in6 src_addr;
+	unsigned char ancillary[ANCILLARY_DATA_LEN];
+
+	struct msghdr hdr = {
+		.msg_name = &src_addr,
+		.msg_namelen = sizeof(src_addr),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = ancillary,
+		.msg_controllen = sizeof(ancillary)
+	};
+
+	ssize_t recv_len = recvmsg(sock, &hdr, 0);
+	if(recv_len < 0) {
+		return recv_len;
+	}
+
+	struct cmsghdr *cmsg;
+	cmsg_for_each(cmsg, &hdr) {
+		if(cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+			struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+			info->ifindex = pktinfo->ipi6_ifindex;
+			info->src_addr = pktinfo->ipi6_addr;
+		}
+	}
+
+	return recv_len;
 }
 
 static inline bool timeout_elapsed(struct timeval *timeout) {
@@ -78,17 +113,31 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		goto fail_sock;
 	}
 
+	// Allow query-only usage
+	if(!callback) {
+		goto fail_sock;
+	}
+
+	const int one = 0;
+
+	if(setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one))) {
+		err = -errno;
+		goto fail_sock;
+	}
+
 	char rx_buff[RX_BUFF_SIZE + 1];
 
 	getclock(&after);
 	timersub(&after, &after, &now);
 	timersub(&timeout, &timeout, &after);
 
+	struct librespondd_pkt_info pktinfo;
 	while(!timeout_elapsed(&timeout)) {
 		memset(rx_buff, 0, RX_BUFF_SIZE + 1);
 		getclock(&now);
 
-		ssize_t recv_size = recv_timeout(sock, rx_buff, RX_BUFF_SIZE, &timeout);
+		memset(&pktinfo, 0, sizeof(pktinfo));
+		ssize_t recv_size = recv_timeout(sock, rx_buff, RX_BUFF_SIZE, &pktinfo, &timeout);
 		if(recv_size < 0) {
 			// Not an error, timeout elapsed
 			if(errno == EAGAIN) {
@@ -105,7 +154,7 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		}
 
 		// Add one extra byte to ensure NUL termination
-		int res = callback(rx_buff, recv_size + (rx_buff[recv_size - 1] ? 1 : 0), cb_priv);
+		int res = callback(rx_buff, recv_size + (rx_buff[recv_size - 1] ? 1 : 0), &pktinfo, cb_priv);
 		if(res) {
 			if(res == RESPONDD_CB_CANCEL) {
 				break;
