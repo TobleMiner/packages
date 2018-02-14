@@ -51,6 +51,18 @@
 #define typeof(_type) __typeof__(_type)
 #endif
 
+#define IPV6_MCAST_ALL_NODES (struct in6_addr){ .s6_addr = { 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 } }
+
+
+#ifndef container_of
+#define container_of(ptr, type, member)					\
+	({								\
+		const typeof(((type *) NULL)->member) *__mptr = (ptr);	\
+		(type *) ((char *) __mptr - offsetof(type, member));	\
+	})
+#endif
+
+/*
 void mesh_free_neighbours(struct list_head *neighbours) {
 	struct mesh_neighbour *neigh, *next;
 	list_for_each_entry_safe(neigh, next, neighbours, list) {
@@ -92,17 +104,18 @@ static int neigh_attr_cb(const struct nlattr *attr, void *data) {
 		goto out;
 	}
 
-	if(type == NDA_LLADDR) {
+	if(type == NDA_DST) {
 		struct mesh_interface_ctx *ctx = data;
 		struct mesh_neighbour *neigh = malloc(sizeof(struct mesh_neighbour));
 		if(!neigh) {
 			goto out;
 		}
 		neigh->iface = ctx->iface;
-		unsigned char* hwaddr = mnl_attr_get_payload(attr);
-		memcpy(neigh->hwaddr, hwaddr, member_size(struct mesh_neighbour, hwaddr));
+		struct in6_addr *addr = mnl_attr_get_payload(attr);
+		memcpy(&neigh->addr, addr, sizeof(*addr));
 		list_add(&neigh->list, ctx->neighbours);
-		printf("Added neighbour %02x:%02x:%02x:%02x:%02x:%02x ", hwaddr[0], hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
+		char buf[INET6_ADDRSTRLEN];
+		printf("Added neighbour %s ", inet_ntop(AF_INET6, addr, buf, sizeof(buf)));
 	}
 
 out:
@@ -190,10 +203,7 @@ fail:
 }
 
 int mesh_get_neighbours_ubus(struct ubus_context *ubus_ctx, struct mesh_neighbour_ctx *neigh_ctx) {
-	neigh_ctx->neighbours = (struct list_head)LIST_HEAD_INIT(neigh_ctx->neighbours);
-	neigh_ctx->interfaces = (struct list_head)LIST_HEAD_INIT(neigh_ctx->interfaces);
-
-	int err = gluonutil_get_mesh_interfaces(ubus_ctx, &neigh_ctx->interfaces);
+	int err = get_neighbours_common(ubus_ctx, neigh_ctx);
 	if(err) {
 		goto fail;
 	}
@@ -218,6 +228,132 @@ int mesh_get_neighbours(struct mesh_neighbour_ctx *neigh_ctx) {
 	}
 
 	int err = mesh_get_neighbours_ubus(ubus_ctx, neigh_ctx);
+
+	ubus_free(ubus_ctx);
+
+	return err;
+}
+*/
+
+static int get_neighbours_common(struct ubus_context *ubus_ctx, struct mesh_neighbour_ctx *neigh_ctx) {
+	neigh_ctx->neighbours = (struct list_head)LIST_HEAD_INIT(neigh_ctx->neighbours);
+	neigh_ctx->interfaces = (struct list_head)LIST_HEAD_INIT(neigh_ctx->interfaces);
+
+	return gluonutil_get_mesh_interfaces(ubus_ctx, &neigh_ctx->interfaces);
+}
+
+void mesh_free_respondd_neighbours(struct list_head *neighbours) {
+	struct mesh_neighbour *neigh, *next;
+	list_for_each_entry_safe(neigh, next, neighbours, list) {
+		list_del(&neigh->list);
+		free(neigh);
+	}
+}
+
+void mesh_free_respondd_neighbours_ctx(struct mesh_neighbour_ctx *ctx) {
+	mesh_free_respondd_neighbours(&ctx->neighbours);
+	gluonutil_free_interfaces(&ctx->interfaces);
+}
+
+struct mesh_respondd_ctx {
+	struct gluonutil_interface *iface;
+	struct list_head *neighbours;
+	void *cb_priv;
+	neighbour_cb cb;
+};
+
+static int mesh_respondd_cb(char* json_data, size_t data_len, struct librespondd_pkt_info *pktinfo, void* priv) {
+	// pktinfo not set, something is not right
+	if(!pktinfo->ifindex) {
+		goto out;
+	}
+
+	struct mesh_respondd_ctx *ctx = priv;
+
+	struct mesh_neighbour *neighbour = malloc(sizeof(struct mesh_neighbour));
+	if(!neighbour) {
+		goto out;
+	}
+	memset(neighbour, 0, sizeof(*neighbour));
+
+	neighbour->iface = ctx->iface;
+	neighbour->addr = pktinfo->src_addr;
+
+	if(ctx->cb) {
+		if(ctx->cb(json_data, data_len, pktinfo, neighbour, ctx->cb_priv)) {
+			goto out_neighbour;
+		}
+	}
+
+	list_add(&neighbour->list, ctx->neighbours);
+
+	return RESPONDD_CB_OK;
+
+out_neighbour:
+	free(neighbour);
+out:
+	return RESPONDD_CB_OK;
+}
+
+int mesh_get_neighbours_respondd_interfaces(struct list_head *interfaces, struct list_head* neighbours, unsigned short respondd_port, neighbour_cb cb, void *priv) {
+	struct gluonutil_interface *iface;
+	struct sockaddr_in6 sock_addr;
+	sock_addr.sin6_family = AF_INET6;
+	sock_addr.sin6_port = respondd_port;
+	sock_addr.sin6_flowinfo = 0;
+	sock_addr.sin6_addr = IPV6_MCAST_ALL_NODES;
+
+	struct timeval timeout = { 3, 0 };
+
+	int err = 0;
+	list_for_each_entry(iface, interfaces, list) {
+		if(!iface->up) {
+			continue;
+		}
+
+		sock_addr.sin6_scope_id = iface->ifindex;
+
+		struct mesh_respondd_ctx ctx = {
+			.iface = iface,
+			.neighbours = neighbours,
+			.cb_priv = priv,
+			.cb = cb,
+		};
+		int ret = respondd_request(&sock_addr, "nodeinfo", &timeout, mesh_respondd_cb, &ctx);
+		if(ret) {
+			err = ret;
+		}
+	}
+
+	return err;
+}
+
+int mesh_get_neighbours_respondd_ubus(struct ubus_context *ubus_ctx, struct mesh_neighbour_ctx *neigh_ctx, unsigned short respondd_port, neighbour_cb cb, void *priv) {
+	int err = get_neighbours_common(ubus_ctx, neigh_ctx);
+	if(err) {
+		goto fail;
+	}
+
+	err = mesh_get_neighbours_respondd_interfaces(&neigh_ctx->interfaces, &neigh_ctx->neighbours, respondd_port, cb, priv);
+	if(err) {
+		goto fail_interfaces;
+	}
+
+	return 0;
+
+fail_interfaces:
+	gluonutil_free_interfaces(&neigh_ctx->interfaces);
+fail:
+	return err;
+}
+
+int mesh_get_neighbours_respondd(struct mesh_neighbour_ctx *neigh_ctx, unsigned short respondd_port, neighbour_cb cb, void *priv) {
+	struct ubus_context *ubus_ctx = ubus_connect(NULL);
+	if(!ubus_ctx) {
+		return -ECONNREFUSED;
+	}
+
+	int err = mesh_get_neighbours_respondd_ubus(ubus_ctx, neigh_ctx, respondd_port, cb, priv);
 
 	ubus_free(ubus_ctx);
 
