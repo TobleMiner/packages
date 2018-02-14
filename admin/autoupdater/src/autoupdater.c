@@ -592,10 +592,10 @@ int main(int argc, char *argv[]) {
 		char v6_addr_tmp[INET6_ADDRSTRLEN];
 
 
-		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
+		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/cgi-bin/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
 			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
 
-		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
+		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/cgi-bin/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
 			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
 
 
