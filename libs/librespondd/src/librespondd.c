@@ -71,7 +71,7 @@ static ssize_t recv_timeout(int sock, char *buff, size_t max_len, struct libresp
 		.msg_iov = &iov,
 		.msg_iovlen = 1,
 		.msg_control = ancillary,
-		.msg_controllen = sizeof(ancillary)
+		.msg_controllen = sizeof(ancillary),
 	};
 
 	ssize_t recv_len = recvmsg(sock, &hdr, 0);
@@ -79,12 +79,12 @@ static ssize_t recv_timeout(int sock, char *buff, size_t max_len, struct libresp
 		return recv_len;
 	}
 
+	info->src_addr = src_addr.sin6_addr;
 	struct cmsghdr *cmsg;
 	cmsg_for_each(cmsg, &hdr) {
 		if(cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
 			struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
 			info->ifindex = pktinfo->ipi6_ifindex;
-			info->src_addr = pktinfo->ipi6_addr;
 		}
 	}
 
@@ -108,6 +108,12 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		goto fail;
 	}
 
+	const int one = 1;
+	if(setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one))) {
+		err = -errno;
+		goto fail_sock;
+	}
+
 	if(sendto(sock, query, strlen(query), 0, (struct sockaddr*)dst, sizeof(struct sockaddr_in6)) < 0) {
 		err = -errno;
 		goto fail_sock;
@@ -115,13 +121,6 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 
 	// Allow query-only usage
 	if(!callback) {
-		goto fail_sock;
-	}
-
-	const int one = 0;
-
-	if(setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one))) {
-		err = -errno;
 		goto fail_sock;
 	}
 
