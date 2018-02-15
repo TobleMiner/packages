@@ -41,7 +41,7 @@
 
 #define RX_BUFF_SIZE 1500
 
-#define cmsg_for_each(_c, _hdr) for((_c) = CMSG_FIRSTHDR((_hdr)); (_c); (_c) = CMSG_NXTHDR((_hdr), (_c)))
+#define cmsg_for_each(c, hdr) for((c) = CMSG_FIRSTHDR((hdr)); (c); (c) = CMSG_NXTHDR((hdr), (c)))
 
 static void getclock(struct timeval *tv) {
 	struct timespec ts;
