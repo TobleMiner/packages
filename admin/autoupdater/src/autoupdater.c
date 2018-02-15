@@ -453,14 +453,6 @@ static int lock_autoupdater(void) {
 	return fd;
 }
 
-struct version_ctx {
-	char *release_str;
-};
-
-#ifndef typeof
-#define typeof(_type) __typeof__((_type))
-#endif
-
 static int respondd_mesh_cb(char *json_data, size_t len, struct librespondd_pkt_info *pktinfo, struct mesh_neighbour *neigh, void* priv) {
 	printf("JSON Response: %s\n", json_data);
 
