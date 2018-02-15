@@ -69,17 +69,6 @@ static const char *const lockfile = "/var/lock/autoupdater.lock";
 static const char *const firmware_path = "/tmp/firmware.bin";
 static const char *const sysupgrade_path = "/sbin/sysupgrade";
 
-/*
-struct update_method {
-	char* name;
-	int (autoupdate*)(const char *mirror, struct settings *s, struct updater_url_fmt *url_fmt, int lock_fd);
-};
-
-static const struct update_method update_methods[] = {
-	
-};
-*/
-
 struct recv_manifest_ctx {
 	struct settings *s;
 	struct manifest m;
@@ -561,15 +550,15 @@ int main(int argc, char *argv[]) {
 	struct mesh_neighbour *neigh;
 	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
 		char *release_str = neigh->priv;
-
+		
 		if(!release_str) {
 			fputs("autoupdater: notice: Skipping neighbour without version info\n", stderr);
 			continue;
 		}
 
 		if(!newer_than(release_str, s.old_version)) {
-			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer than '%s', skipping node\n", release_str, s.old_version);
-			continue;
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer than '%s', skipping neighbour\n", release_str, s.old_version);
+			continue;			
 		}
 
 		char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
@@ -606,76 +595,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-/*
-	// TODO this might not be the best idea; I think we can not be sure that all neighbours are in the neighbour cache yet
-	if(mesh_get_neighbours(&neigh_ctx)) {
-		fputs("autoupdater: error: Failed to get mesh neighbours\n", stderr);
-		goto fail;
-	}
-
-	struct sockaddr_in6 sock_addr;
-	sock_addr.sin6_family = AF_INET6;
-	sock_addr.sin6_port = 1001; // TODO this should be configureable
-	sock_addr.sin6_flowinfo = 0;
-
-	struct timeval respondd_timeout = { 3, 0 }; // TODO this should be configureable, too
-
-	struct mesh_neighbour *neigh;
-	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
-		unsigned char *hwaddr = neigh->hwaddr;
-		printf("Handling neighbour "AU_MAC_FMT"\n", hwaddr[0], hwaddr[1], hwaddr[2], hwaddr[3], hwaddr[4], hwaddr[5]);
-
-		sock_addr.sin6_scope_id = neigh->iface->ifindex;
-		hwaddr_to_lladdr(&sock_addr.sin6_addr, neigh->hwaddr);
-
-		struct version_ctx ctx;
-		ctx.release_str = NULL;
-		if(respondd_request(&sock_addr, "nodeinfo", &respondd_timeout, respondd_mesh_cb, &ctx)) {
-			fputs("autoupdater: warning: Failed to get nodeinfo of neighbour, skipping\n", stderr);
-			continue;
-		}
-
-		if(!ctx.release_str) {
-			fputs("autoupdater: warning: Failed to get fimware version of neighbour, skipping\n", stderr);
-			continue;
-		}
-
-		if(!newer_than(ctx.release_str, s.old_version)) {
-			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer that '%s', skipping node\n", release_str, s.old_version);
-			continue;
-		}
-
-
-		char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
-		char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
-		char v6_addr_tmp[INET6_ADDRSTRLEN];
-
-
-		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
-			inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
-
-		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
-			inet_ntop(AF_INET6, &sock_addr.sin6_addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
-
-
-		struct updater_url_fmt proxy_download_format = {
-			.manifest_fmt = manifest_fmt,
-			.manifest_fmt_len = manifest_fmt_len,
-
-			.image_fmt = image_fmt,
-			.image_fmt_len = image_fmt_len,
-		};
-
-		if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
-			// update the mtime of the lockfile to indicate a successful run
-			futimens(lock_fd, NULL);
-			mesh_free_neighbours_ctx(&neigh_ctx);
-			return EXIT_SUCCESS;
-		}
-	}
-
-*/
-
 fail_mesh_neigh:
 	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
 		if(neigh->priv) {
@@ -684,7 +603,7 @@ fail_mesh_neigh:
 	}
 
 	mesh_free_respondd_neighbours_ctx(&neigh_ctx);
-fail:
+
 	uloop_done();
 
 	fputs("autoupdater: error: no usable mirror found\n", stderr);
