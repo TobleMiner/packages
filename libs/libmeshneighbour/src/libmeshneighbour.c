@@ -344,14 +344,14 @@ fail:
 }
 
 int mesh_get_neighbours_respondd(struct mesh_neighbour_ctx *neigh_ctx, unsigned short respondd_port, neighbour_cb cb, void *priv) {
-	struct ubus_context *ubus_ctx = ubus_connect(NULL);
-	if(!ubus_ctx) {
-		return -ECONNREFUSED;
-	}
+        struct ubus_context *ubus_ctx = ubus_connect(NULL);
+        if(!ubus_ctx) {
+                return -ECONNREFUSED;
+        }
 
-	int err = mesh_get_neighbours_respondd_ubus(ubus_ctx, neigh_ctx, respondd_port, cb, priv);
+        int err = mesh_get_neighbours_respondd_ubus(ubus_ctx, neigh_ctx, respondd_port, cb, priv);
 
-	ubus_free(ubus_ctx);
+        ubus_free(ubus_ctx);
 
-	return err;
+        return err;
 }
