@@ -18,12 +18,12 @@ endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
-	$(call Build/Compile/Default)
-	$(call GluonSrcDiet,./luasrc,$(PKG_BUILD_DIR)/luadest/)
+	mkdir -p $(PKG_BUILD_DIR)/luadest
+	$(CP) ./luasrc/* $(PKG_BUILD_DIR)/luadest/
+#	$(call GluonSrcDiet,./luasrc,$(PKG_BUILD_DIR)/luadest/)
 endef
 
 define Package/autoupdater-proxy/install
