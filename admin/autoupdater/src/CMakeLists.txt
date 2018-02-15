@@ -35,7 +35,7 @@ add_executable(autoupdater
   util.c
   version.c
 )
-set_property(TARGET autoupdater PROPERTY COMPILE_FLAGS "-std=c99 -Wall")
+set_property(TARGET autoupdater PROPERTY COMPILE_FLAGS "-std=gnu99 -Wall")
 #set_property(TARGET autoupdater PROPERTY LINK_FLAGS "")
 target_link_libraries(autoupdater
     m
