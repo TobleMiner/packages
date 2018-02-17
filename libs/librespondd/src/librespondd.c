@@ -124,6 +124,7 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 		goto fail_sock;
 	}
 
+	// Add one extra byte to ensure NUL termination
 	char rx_buff[RX_BUFF_SIZE + 1];
 
 	getclock(&after);
@@ -152,8 +153,7 @@ int respondd_request(const struct sockaddr_in6 *dst, const char* query, struct t
 			break;
 		}
 
-		// Add one extra byte to ensure NUL termination
-		int res = callback(rx_buff, recv_size + (rx_buff[recv_size - 1] ? 1 : 0), &pktinfo, cb_priv);
+		int res = callback(rx_buff, recv_size, &pktinfo, cb_priv);
 		if(res) {
 			if(res == RESPONDD_CB_CANCEL) {
 				break;
