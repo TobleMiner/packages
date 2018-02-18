@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=autoupdater
 PKG_VERSION:=4
 
-PKG_BUILD_DEPENDS := libmeshneighbour librespondd
+PKG_BUILD_DEPENDS := librespondd libmeshneighbour
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
