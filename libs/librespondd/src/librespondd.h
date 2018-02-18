@@ -15,7 +15,7 @@ struct librespondd_pkt_info {
 	struct in6_addr src_addr;
 };
 
-typedef int (*respondd_cb)(char* json_data, size_t data_len, struct librespondd_pkt_info *pktinfo, void* priv);
+typedef int (*respondd_cb)(const char* json_data, size_t data_len, const struct librespondd_pkt_info *pktinfo, void* priv);
 
 int respondd_request(const struct sockaddr_in6* dst, const char* query, struct timeval *timeout, respondd_cb callback, void* cb_priv);
 
