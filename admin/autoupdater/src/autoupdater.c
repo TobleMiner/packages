@@ -515,7 +515,7 @@ static int proxy_manifest_url_cb(char *image_url, size_t url_len, const struct s
 static int proxy_image_url_cb(char *image_url, size_t url_len, const struct settings *s, const char *image, void *priv) {
 	struct proxy_cb_priv *proxy_priv = priv;
 	return snprintf(image_url, url_len,
-		 "http://[%s%%%s]/cgi-bin/fwproxy?type=image&branch=%sfile=%s",
+		 "http://[%s%%%s]/cgi-bin/fwproxy?type=image&branch=%s&file=%s",
 		 proxy_priv->proxy_ll_addr, proxy_priv->proxy_iface, s->branch, image);
 }
 
