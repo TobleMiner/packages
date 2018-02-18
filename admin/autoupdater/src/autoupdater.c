@@ -33,11 +33,11 @@
 #include "version.h"
 
 #include <libmeshneighbour.h>
+#include <librespondd.h>
 #include <libplatforminfo.h>
 #include <libubox/uloop.h>
 #include <libubox/list.h>
 #include <libubus.h>
-#include <librespondd.h>
 #include <ecdsautil/ecdsa.h>
 #include <ecdsautil/sha256.h>
 #include <json-c/json.h>
@@ -308,9 +308,6 @@ static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx
 	if(!URL_CB_OK(url_ctx->manifest_url_cb(manifest_url, URL_MAX_LEN, s, url_ctx->manifest_url_priv), URL_MAX_LEN)) {
 		goto out;
 	}
-//	sprintf(manifest_url, url_fmt->manifest_fmt, mirror, s->branch);
-//	sprintf(manifest_url, "%s/%s.manifest", mirror, s->branch);
-
 
 	printf("Retrieving manifest from %s ...\n", manifest_url);
 
@@ -384,8 +381,6 @@ static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx
 			goto fail_after_download;
 		}
 
-//		sprintf(image_url, url_fmt->image_fmt, mirror, s->branch, m->image_filename);
-//		sprintf(image_url, "%s/%s", mirror, m->image_filename);
 		printf("Downloading image from '%s'\n", image_url);
 
 		ecdsa_sha256_init(&image_ctx.hash_ctx);
@@ -461,38 +456,28 @@ static int lock_autoupdater(void) {
 	return fd;
 }
 
-static int respondd_mesh_cb(char *json_data, size_t len, struct librespondd_pkt_info *pktinfo, struct mesh_neighbour *neigh, void* priv) {
-	printf("JSON Response: %s\n", json_data);
-
-	struct json_object *json_root = json_tokener_parse(json_data);
-	if(!json_root) {
-		fputs("autoupdater: error: Failed to parse respondd response, skipping\n", stderr);
-		goto out;
-	}
-
+static int respondd_mesh_cb(struct json_object *json_root, const struct librespondd_pkt_info *pktinfo, struct mesh_neighbour *neigh, void* priv) {
 	struct json_object *json_software;
 	if(!json_object_object_get_ex(json_root, "software", &json_software)) {
 		fputs("autoupdater: error: Failed to get software object form response, skipping\n", stderr);
-		goto out_json_root;
+		goto out;
 	}
 
 	struct json_object *json_firmware;
 	if(!json_object_object_get_ex(json_software, "firmware", &json_firmware)) {
 		fputs("autoupdater: error: Failed to get firmware object form response, skipping\n", stderr);
-		goto out_json_root;
+		goto out;
 	}
 
 	struct json_object *json_release;
 	if(!json_object_object_get_ex(json_firmware, "release", &json_release)) {
 		fputs("autoupdater: error: Failed to get release object form response, skipping\n", stderr);
-		goto out_json_root;
+		goto out;
 	}
 
 	const char *version_str = json_object_get_string(json_release);
 	neigh->priv = strdup(version_str);
 
-out_json_root:
-	json_object_put(json_root);	
 out:
 	return RESPONDD_CB_OK;
 }
