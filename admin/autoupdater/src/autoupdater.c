@@ -288,20 +288,34 @@ static void recv_image_cb(struct uclient *cl) {
 	}
 }
 
+#define URL_MAX_LEN 256
 
-static bool autoupdate(const char *mirror, struct settings *s, struct updater_url_fmt *url_fmt, int lock_fd) {
+typedef int (*manifest_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, void *priv);
+typedef int (*image_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, const char *image_name, void *priv);
+
+struct updater_url_ctx {
+	manifest_url_cb manifest_url_cb;
+	void *manifest_url_priv;
+
+	image_url_cb image_url_cb;
+	void *image_url_priv;
+};
+
+#define URL_CB_OK(ret, max_len) ({ const typeof((ret)) __ret = ret; ((__ret) >= 0 && (__ret) < (max_len)); })
+
+static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx, int lock_fd) {
 	bool ret = false;
 	struct recv_manifest_ctx manifest_ctx = { .s = s };
 	manifest_ctx.ptr = manifest_ctx.buf;
 	struct manifest *m = &manifest_ctx.m;
 
-	printf("Manifest url fmt: %s\n", url_fmt->manifest_fmt);
-	printf("Image url fmt: %s\n", url_fmt->image_fmt);
-
 	/**** Get and check manifest *****************************************/
 	/* Construct manifest URL */
-	char manifest_url[strlen(mirror) + strlen(s->branch) + url_fmt->manifest_fmt_len + 1];
-	sprintf(manifest_url, url_fmt->manifest_fmt, mirror, s->branch);
+	char manifest_url[URL_MAX_LEN];
+	if(!URL_CB_OK(url_ctx->manifest_url_cb(manifest_url, URL_MAX_LEN, s, url_ctx->manifest_url_priv), URL_MAX_LEN)) {
+		goto out;
+	}
+//	sprintf(manifest_url, url_fmt->manifest_fmt, mirror, s->branch);
 //	sprintf(manifest_url, "%s/%s.manifest", mirror, s->branch);
 
 
@@ -372,10 +386,15 @@ static bool autoupdate(const char *mirror, struct settings *s, struct updater_ur
 
 	/* Download image and calculate SHA256 checksum */
 	{
-		char image_url[strlen(mirror) + strlen(m->image_filename) + url_fmt->image_fmt_len + 1];
-		sprintf(image_url, url_fmt->image_fmt, mirror, s->branch, m->image_filename);
-		printf("Downloading image from '%s'\n", image_url);
+		char image_url[URL_MAX_LEN];
+		if(!URL_CB_OK(url_ctx->image_url_cb(image_url, URL_MAX_LEN, s, m->image_filename, url_ctx->image_url_priv), URL_MAX_LEN)) {
+			goto fail_after_download;
+		}
+
+//		sprintf(image_url, url_fmt->image_fmt, mirror, s->branch, m->image_filename);
 //		sprintf(image_url, "%s/%s", mirror, m->image_filename);
+		printf("Downloading image from '%s'\n", image_url);
+
 		ecdsa_sha256_init(&image_ctx.hash_ctx);
 		int err_code = get_url(image_url, &recv_image_cb, &image_ctx, m->imagesize);
 		puts("");
@@ -485,9 +504,42 @@ out:
 	return RESPONDD_CB_OK;
 }
 
-#define AUTOUPDATER_MAX_URL_FORMAT_LENGTH 128
 
 #define AU_MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
+
+struct direct_cb_priv {
+	const char *mirror;
+};
+
+static int direct_manifest_url_cb(char *manifest_url, size_t url_len, const struct settings *s, void *priv) {
+	struct direct_cb_priv *cb_priv = priv;
+	return snprintf(manifest_url, url_len, "%s/%s.manifest", cb_priv->mirror, s->branch);
+}
+
+static int direct_image_url_cb(char *manifest_url, size_t url_len, const struct settings *s, const char *image, void *priv) {
+	struct direct_cb_priv *cb_priv = priv;
+	return snprintf(manifest_url, url_len, "%s/%s", cb_priv->mirror, image);
+}
+
+
+struct proxy_cb_priv {
+	const char *proxy_ll_addr;
+	const char *proxy_iface;
+};
+
+static int proxy_manifest_url_cb(char *image_url, size_t url_len, const struct settings *s, void *priv) {
+	struct proxy_cb_priv *proxy_priv = priv;
+	return snprintf(image_url, url_len,
+		 "http://[%s%%%s]/cgi-bin/fwproxy?type=manifest&branch=%s&file=%s.manifest",
+		 proxy_priv->proxy_ll_addr, proxy_priv->proxy_iface, s->branch, s->branch);
+}
+
+static int proxy_image_url_cb(char *image_url, size_t url_len, const struct settings *s, const char *image, void *priv) {
+	struct proxy_cb_priv *proxy_priv = priv;
+	return snprintf(image_url, url_len,
+		 "http://[%s%%%s]/cgi-bin/fwproxy?type=image&branch=%sfile=%s",
+		 proxy_priv->proxy_ll_addr, proxy_priv->proxy_iface, s->branch, image);
+}
 
 int main(int argc, char *argv[]) {
 	struct settings s = { };
@@ -508,12 +560,10 @@ int main(int argc, char *argv[]) {
 
 	uloop_init();
 
-	struct updater_url_fmt direct_download_format = {
-		.manifest_fmt = "%1$s/%2$s.manifest",
-		.manifest_fmt_len = 10,
+	struct updater_url_ctx direct_download_ctx = {
+		.manifest_url_cb = direct_manifest_url_cb,
 
-		.image_fmt = "%1$s/%3$s%2$.0s",
-		.image_fmt_len = 1,
+		.image_url_cb = direct_image_url_cb,
 	};
 
 	size_t mirrors_left = s.n_mirrors;
@@ -533,7 +583,9 @@ int main(int argc, char *argv[]) {
 			i--;
 		}
 
-		if (autoupdate(*mirror, &s, &direct_download_format, lock_fd)) {
+		struct direct_cb_priv cb_priv = { *mirror };
+		direct_download_ctx.manifest_url_priv = direct_download_ctx.image_url_priv = &cb_priv;
+		if (autoupdate(&s, &direct_download_ctx, lock_fd)) {
 			// update the mtime of the lockfile to indicate a successful run
 			futimens(lock_fd, NULL);
 
@@ -554,6 +606,12 @@ int main(int argc, char *argv[]) {
 		goto fail_mesh_neigh;
 	}
 
+	struct updater_url_ctx proxy_download_ctx = {
+		.manifest_url_cb = proxy_manifest_url_cb,
+
+		.image_url_cb = proxy_image_url_cb,
+	};
+
 	struct mesh_neighbour *neigh;
 	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
 		char *release_str = neigh->priv;
@@ -568,27 +626,16 @@ int main(int argc, char *argv[]) {
 			continue;			
 		}
 
-		char manifest_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
-		char image_fmt[AUTOUPDATER_MAX_URL_FORMAT_LENGTH];
 		char v6_addr_tmp[INET6_ADDRSTRLEN];
 
-
-		int manifest_fmt_len = snprintf(manifest_fmt, sizeof(manifest_fmt), "http://[%s%%%%%s]/cgi-bin/fwproxy?type=manifest&branch=%%2$s&file=%%2$s.manifest%%1$.0s",
-			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
-
-		int image_fmt_len = snprintf(image_fmt, sizeof(image_fmt), "http://[%s%%%%%s]/cgi-bin/fwproxy?type=image&branch=%%2$s&file=%%3$s%%1$.0s",
-			inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN), neigh->iface->device);
-
-
-		struct updater_url_fmt proxy_download_format = {
-			.manifest_fmt = manifest_fmt,
-			.manifest_fmt_len = manifest_fmt_len,
-
-			.image_fmt = image_fmt,
-			.image_fmt_len = image_fmt_len,
+		struct proxy_cb_priv proxy_priv = {
+			.proxy_ll_addr = inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN),
+			.proxy_iface = neigh->iface->device,
 		};
 
-		if (autoupdate("", &s, &proxy_download_format, lock_fd)) {
+		proxy_download_ctx.manifest_url_priv = proxy_download_ctx.image_url_priv = &proxy_priv;
+
+		if (autoupdate(&s, &proxy_download_ctx, lock_fd)) {
 			// update the mtime of the lockfile to indicate a successful run
 			futimens(lock_fd, NULL);
 			list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
