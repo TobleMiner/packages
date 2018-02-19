@@ -27,7 +27,8 @@ define Build/Compile
 endef
 
 define Package/autoupdater-proxy/install
-	$(CP) $(PKG_BUILD_DIR)/luadest/* $(1)/
+	$(INSTALL_DIR) $(1)/lib/gluon/status-page/www/cgi-bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/luadest/lib/gluon/status-page/www/cgi-bin/fwproxy $(1)/lib/gluon/status-page/www/cgi-bin/fwproxy
 endef
 
 $(eval $(call BuildPackage,autoupdater-proxy))
