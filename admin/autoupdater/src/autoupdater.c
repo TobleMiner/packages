@@ -60,6 +60,9 @@
 
 
 #define MAX_LINE_LENGTH 512
+#define MAX_URL_LENGTH 256
+
+
 #define STRINGIFY(str) #str
 
 static const char *const download_d_dir = "/usr/lib/autoupdater/download.d";
@@ -288,8 +291,6 @@ static void recv_image_cb(struct uclient *cl) {
 	}
 }
 
-#define URL_MAX_LEN 256
-
 typedef int (*manifest_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, void *priv);
 typedef int (*image_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, const char *image_name, void *priv);
 
@@ -311,8 +312,8 @@ static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx
 
 	/**** Get and check manifest *****************************************/
 	/* Construct manifest URL */
-	char manifest_url[URL_MAX_LEN];
-	if(!URL_CB_OK(url_ctx->manifest_url_cb(manifest_url, URL_MAX_LEN, s, url_ctx->manifest_url_priv), URL_MAX_LEN)) {
+	char manifest_url[MAX_URL_LENGTH];
+	if(!URL_CB_OK(url_ctx->manifest_url_cb(manifest_url, MAX_URL_LENGTH, s, url_ctx->manifest_url_priv), MAX_URL_LENGTH)) {
 		goto out;
 	}
 
@@ -383,8 +384,8 @@ static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx
 
 	/* Download image and calculate SHA256 checksum */
 	{
-		char image_url[URL_MAX_LEN];
-		if(!URL_CB_OK(url_ctx->image_url_cb(image_url, URL_MAX_LEN, s, m->image_filename, url_ctx->image_url_priv), URL_MAX_LEN)) {
+		char image_url[MAX_URL_LENGTH];
+		if(!URL_CB_OK(url_ctx->image_url_cb(image_url, MAX_URL_LENGTH, s, m->image_filename, url_ctx->image_url_priv), MAX_URL_LENGTH)) {
 			goto fail_after_download;
 		}
 
@@ -490,7 +491,6 @@ out:
 }
 
 
-#define AU_MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 
 struct direct_cb_priv {
 	const char *mirror;
