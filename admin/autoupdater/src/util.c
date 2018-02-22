@@ -36,6 +36,7 @@
 
 #include <sys/wait.h>
 
+
 void run_dir(const char *dir) {
 	char pat[strlen(dir) + 3];
 	sprintf(pat, "%s/*", dir);
