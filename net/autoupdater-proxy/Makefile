@@ -13,7 +13,7 @@ define Package/autoupdater-proxy
   CATEGORY:=Network
   TITLE:=Cgi script for proxying updates via neighbours
   # Pretty much a hack, but we don't have a cgi meta directory
-  DEPENDS:=+gluon-status-page-api
+  DEPENDS:=+gluon-status-page
 endef
 
 define Build/Prepare
