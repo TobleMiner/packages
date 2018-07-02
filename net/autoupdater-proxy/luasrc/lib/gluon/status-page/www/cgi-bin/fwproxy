@@ -22,12 +22,12 @@ for kvpair in query:gmatch('[^&]+') do
 end
 
 local function shell_escape(str)
-	-- Try to make sure nobody can escape from double quoted string
-	return str:gsub('\\', ''):gsub('"', '\\"')
+	-- Try to make sure nobody can escape from single quoted string
+	return str:gsub('\\', ''):gsub("'", "\\'")
 end
 
 local function wget(url)
-	local cmdline = string.format('wget -q -O - "%s"', shell_escape(url))
+	local cmdline = string.format("wget -q -O - '%s'", shell_escape(url))
 
 	local proc = io.popen(cmdline)
 
