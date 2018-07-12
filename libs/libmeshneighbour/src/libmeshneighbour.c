@@ -154,7 +154,7 @@ static int mesh_get_neighbours_respondd_interfaces(struct list_head *interfaces,
 	struct gluonutil_interface *iface;
 	struct sockaddr_in6 sock_addr;
 	sock_addr.sin6_family = AF_INET6;
-	sock_addr.sin6_port = respondd_port;
+	sock_addr.sin6_port = htons(respondd_port);
 	sock_addr.sin6_flowinfo = 0;
 	sock_addr.sin6_addr = IPV6_MCAST_ALL_NODES;
 
