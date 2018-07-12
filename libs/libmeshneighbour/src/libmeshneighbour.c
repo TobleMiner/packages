@@ -120,7 +120,7 @@ static int mesh_respondd_cb(const char *json_data, size_t data_len, const struct
 
 	struct mesh_neighbour *neighbour = malloc(sizeof(struct mesh_neighbour));
 	if(!neighbour) {
-		goto out;
+		goto out_json;
 	}
 	memset(neighbour, 0, sizeof(*neighbour));
 
