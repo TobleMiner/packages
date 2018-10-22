@@ -1,4 +1,5 @@
 /*
+  Copyright (c) 2018, Tobias Schramm <tobleminer@gmail.com>
   Copyright (c) 2017, Matthias Schiffer <mschiffer@universe-factory.net>
                       Jan-Philipp Litza <janphilipp@litza.de>
   All rights reserved.
@@ -31,10 +32,15 @@
 #include "util.h"
 #include "version.h"
 
+#include <libmeshneighbour.h>
+#include <librespondd.h>
 #include <libplatforminfo.h>
 #include <libubox/uloop.h>
+#include <libubox/list.h>
+#include <libubus.h>
 #include <ecdsautil/ecdsa.h>
 #include <ecdsautil/sha256.h>
+#include <json-c/json.h>
 
 #include <fcntl.h>
 #include <getopt.h>
@@ -48,9 +54,15 @@
 #include <sys/types.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+
+#include <arpa/inet.h>
 
 
 #define MAX_LINE_LENGTH 512
+#define MAX_URL_LENGTH 256
+
+
 #define STRINGIFY(str) #str
 
 static const char *const download_d_dir = "/usr/lib/autoupdater/download.d";
@@ -59,7 +71,6 @@ static const char *const upgrade_d_dir = "/usr/lib/autoupdater/upgrade.d";
 static const char *const lockfile = "/var/lock/autoupdater.lock";
 static const char *const firmware_path = "/tmp/firmware.bin";
 static const char *const sysupgrade_path = "/sbin/sysupgrade";
-
 
 struct recv_manifest_ctx {
 	struct settings *s;
@@ -73,6 +84,13 @@ struct recv_image_ctx {
 	ecdsa_sha256_context_t hash_ctx;
 };
 
+struct updater_url_fmt {
+	char *manifest_fmt;
+	size_t manifest_fmt_len;
+
+	char *image_fmt;
+	size_t image_fmt_len;
+};
 
 static void usage(void) {
 	fputs("\n"
@@ -273,8 +291,20 @@ static void recv_image_cb(struct uclient *cl) {
 	}
 }
 
+typedef int (*manifest_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, void *priv);
+typedef int (*image_url_cb)(char *manifest_url, size_t url_len, const struct settings *s, const char *image_name, void *priv);
 
-static bool autoupdate(const char *mirror, struct settings *s, int lock_fd) {
+struct updater_url_ctx {
+	manifest_url_cb manifest_url_cb;
+	void *manifest_url_priv;
+
+	image_url_cb image_url_cb;
+	void *image_url_priv;
+};
+
+#define URL_CB_OK(ret, max_len) ({ const typeof((ret)) __ret = ret; ((__ret) >= 0 && (__ret) < (max_len)); })
+
+static bool autoupdate(struct settings *s, const struct updater_url_ctx *url_ctx, int lock_fd) {
 	bool ret = false;
 	struct recv_manifest_ctx manifest_ctx = { .s = s };
 	manifest_ctx.ptr = manifest_ctx.buf;
@@ -282,9 +312,10 @@ static bool autoupdate(const char *mirror, struct settings *s, int lock_fd) {
 
 	/**** Get and check manifest *****************************************/
 	/* Construct manifest URL */
-	char manifest_url[strlen(mirror) + strlen(s->branch) + 11];
-	sprintf(manifest_url, "%s/%s.manifest", mirror, s->branch);
-
+	char manifest_url[MAX_URL_LENGTH];
+	if(!URL_CB_OK(url_ctx->manifest_url_cb(manifest_url, MAX_URL_LENGTH, s, url_ctx->manifest_url_priv), MAX_URL_LENGTH)) {
+		goto out;
+	}
 
 	printf("Retrieving manifest from %s ...\n", manifest_url);
 
@@ -353,8 +384,13 @@ static bool autoupdate(const char *mirror, struct settings *s, int lock_fd) {
 
 	/* Download image and calculate SHA256 checksum */
 	{
-		char image_url[strlen(mirror) + strlen(m->image_filename) + 2];
-		sprintf(image_url, "%s/%s", mirror, m->image_filename);
+		char image_url[MAX_URL_LENGTH];
+		if(!URL_CB_OK(url_ctx->image_url_cb(image_url, MAX_URL_LENGTH, s, m->image_filename, url_ctx->image_url_priv), MAX_URL_LENGTH)) {
+			goto fail_after_download;
+		}
+
+		printf("Downloading image from '%s'\n", image_url);
+
 		ecdsa_sha256_init(&image_ctx.hash_ctx);
 		int err_code = get_url(image_url, &recv_image_cb, &image_ctx, m->imagesize);
 		puts("");
@@ -428,6 +464,67 @@ static int lock_autoupdater(void) {
 	return fd;
 }
 
+static int respondd_mesh_cb(struct json_object *json_root, const struct librespondd_pkt_info *pktinfo, struct mesh_neighbour *neigh, void* priv) {
+	struct json_object *json_software;
+	if(!json_object_object_get_ex(json_root, "software", &json_software)) {
+		fputs("autoupdater: error: Failed to get software object form response, skipping\n", stderr);
+		goto out;
+	}
+
+	struct json_object *json_firmware;
+	if(!json_object_object_get_ex(json_software, "firmware", &json_firmware)) {
+		fputs("autoupdater: error: Failed to get firmware object form response, skipping\n", stderr);
+		goto out;
+	}
+
+	struct json_object *json_release;
+	if(!json_object_object_get_ex(json_firmware, "release", &json_release)) {
+		fputs("autoupdater: error: Failed to get release object form response, skipping\n", stderr);
+		goto out;
+	}
+
+	const char *version_str = json_object_get_string(json_release);
+	neigh->priv = strdup(version_str);
+
+out:
+	return RESPONDD_CB_OK;
+}
+
+
+
+struct direct_cb_priv {
+	const char *mirror;
+};
+
+static int direct_manifest_url_cb(char *manifest_url, size_t url_len, const struct settings *s, void *priv) {
+	struct direct_cb_priv *cb_priv = priv;
+	return snprintf(manifest_url, url_len, "%s/%s.manifest", cb_priv->mirror, s->branch);
+}
+
+static int direct_image_url_cb(char *manifest_url, size_t url_len, const struct settings *s, const char *image, void *priv) {
+	struct direct_cb_priv *cb_priv = priv;
+	return snprintf(manifest_url, url_len, "%s/%s", cb_priv->mirror, image);
+}
+
+
+struct proxy_cb_priv {
+	const char *proxy_ll_addr;
+	const char *proxy_iface;
+};
+
+static int proxy_manifest_url_cb(char *image_url, size_t url_len, const struct settings *s, void *priv) {
+	struct proxy_cb_priv *proxy_priv = priv;
+	return snprintf(image_url, url_len,
+		 "http://[%s%%%s]/cgi-bin/fwproxy?type=manifest&branch=%s&file=%s.manifest",
+		 proxy_priv->proxy_ll_addr, proxy_priv->proxy_iface, s->branch, s->branch);
+}
+
+static int proxy_image_url_cb(char *image_url, size_t url_len, const struct settings *s, const char *image, void *priv) {
+	struct proxy_cb_priv *proxy_priv = priv;
+	return snprintf(image_url, url_len,
+		 "http://[%s%%%s]/cgi-bin/fwproxy?type=image&branch=%s&file=%s",
+		 proxy_priv->proxy_ll_addr, proxy_priv->proxy_iface, s->branch, image);
+}
 
 int main(int argc, char *argv[]) {
 	struct settings s = { };
@@ -448,6 +545,12 @@ int main(int argc, char *argv[]) {
 
 	uloop_init();
 
+	struct updater_url_ctx direct_download_ctx = {
+		.manifest_url_cb = direct_manifest_url_cb,
+
+		.image_url_cb = direct_image_url_cb,
+	};
+
 	size_t mirrors_left = s.n_mirrors;
 	while (mirrors_left) {
 		const char **mirror = s.mirrors;
@@ -465,7 +568,9 @@ int main(int argc, char *argv[]) {
 			i--;
 		}
 
-		if (autoupdate(*mirror, &s, lock_fd)) {
+		struct direct_cb_priv cb_priv = { *mirror };
+		direct_download_ctx.manifest_url_priv = direct_download_ctx.image_url_priv = &cb_priv;
+		if (autoupdate(&s, &direct_download_ctx, lock_fd)) {
 			// update the mtime of the lockfile to indicate a successful run
 			futimens(lock_fd, NULL);
 
@@ -476,6 +581,67 @@ int main(int argc, char *argv[]) {
 		*mirror = NULL;
 		mirrors_left--;
 	}
+
+	puts("autoupdater: No update severs could be reached. Trying to use mesh neighbours as proxy");
+
+	struct mesh_neighbour_ctx neigh_ctx;
+
+	if(mesh_get_neighbours_respondd(&neigh_ctx, 1001, respondd_mesh_cb, NULL)) {
+		fputs("autoupdater: error: Failed to get mesh neighbours\n", stderr);
+		goto fail_mesh_neigh;
+	}
+
+	struct updater_url_ctx proxy_download_ctx = {
+		.manifest_url_cb = proxy_manifest_url_cb,
+
+		.image_url_cb = proxy_image_url_cb,
+	};
+
+	struct mesh_neighbour *neigh;
+	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+		char *release_str = neigh->priv;
+		
+		if(!release_str) {
+			fputs("autoupdater: notice: Skipping neighbour without version info\n", stderr);
+			continue;
+		}
+
+		if(!newer_than(release_str, s.old_version)) {
+			fprintf(stderr, "autoupdater: notice: Frimware version '%s' not newer than '%s', skipping neighbour\n", release_str, s.old_version);
+			continue;			
+		}
+
+		char v6_addr_tmp[INET6_ADDRSTRLEN];
+
+		struct proxy_cb_priv proxy_priv = {
+			.proxy_ll_addr = inet_ntop(AF_INET6, &neigh->addr, v6_addr_tmp, INET6_ADDRSTRLEN),
+			.proxy_iface = neigh->iface->device,
+		};
+
+		proxy_download_ctx.manifest_url_priv = proxy_download_ctx.image_url_priv = &proxy_priv;
+
+		if (autoupdate(&s, &proxy_download_ctx, lock_fd)) {
+			// update the mtime of the lockfile to indicate a successful run
+			futimens(lock_fd, NULL);
+			list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+				if(neigh->priv) {
+					free(neigh->priv);
+				}
+			}
+
+			mesh_free_respondd_neighbours_ctx(&neigh_ctx);
+			return EXIT_SUCCESS;
+		}
+	}
+
+fail_mesh_neigh:
+	list_for_each_entry(neigh, &neigh_ctx.neighbours, list) {
+		if(neigh->priv) {
+			free(neigh->priv);
+		}
+	}
+
+	mesh_free_respondd_neighbours_ctx(&neigh_ctx);
 
 	uloop_done();
 
