@@ -204,6 +204,5 @@ out_lockfd:
 	if(lockfd >= 0) {
 		close(lockfd);
 	}
-	unlink(LOCKFILE);
 	return err;
 }
